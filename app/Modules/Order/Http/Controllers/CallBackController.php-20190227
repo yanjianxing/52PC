@@ -1,0 +1,1867 @@
+<?php
+
+namespace App\Modules\Order\Http\Controllers;
+
+use App\Http\Requests;
+use App\Http\Controllers\Controller;
+use App\Modules\Employ\Models\EmployModel;
+use App\Modules\Finance\Model\FinancialModel;
+use App\Modules\Manage\Model\ConfigModel;
+use App\Modules\Manage\Model\SubOrderModel;
+use App\Modules\Manage\Model\UserCouponModel;
+use App\Modules\Manage\Model\VipModel;
+use App\Modules\Manage\Model\VipUserOrderModel;
+use App\Modules\Order\Model\OrderModel;
+use App\Modules\Order\Model\ShopOrderModel;
+use App\Modules\Shop\Models\GoodsModel;
+use App\Modules\Shop\Models\GoodsServiceModel;
+use App\Modules\Shop\Models\ProgrammeEnquiryMessageModel;
+use App\Modules\Shop\Models\ProgrammeInquiryPayModel;
+use App\Modules\Shop\Models\ProgrammeOrderModel;
+use App\Modules\Shop\Models\ProgrammeOrderSubModel;
+use App\Modules\Task\Model\TaskModel;
+use App\Modules\Task\Model\TaskTypeModel;
+use App\Modules\User\Model\UserCouponLogModel;
+use App\Modules\User\Model\UserDepositModel;
+use App\Modules\User\Model\UserDetailModel;
+use App\Modules\User\Model\UserToolModel;
+use App\Modules\Vipshop\Models\VipshopOrderModel;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Redirect;
+use App\Modules\Manage\Model\ArticlePayModel;
+use App\Modules\Manage\Model\ArticleModel;
+use Omnipay;
+use Log;
+
+class CallBackController extends Controller
+{
+    /**
+     * 支付宝同步回调处理
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\RedirectResponse|\Illuminate\Routing\Redirector
+     */
+    public function alipayReturn(Request $request)
+    {
+	Log::info('alipay retrun');
+
+	$type = ShopOrderModel::handleOrderCode($request->get('out_trade_no'));
+        switch ($type) {
+            case 'cash'://充值
+                $res = OrderModel::where('code', $request->get('out_trade_no'))->first();
+                if (!empty($res) && $res->status != 0) {
+                    echo '支付成功';
+                    return redirect()->to('finance/cash');
+                } 
+                break;
+            case 'task service':
+                $waitHandle = OrderModel::where('code',$request->get('out_trade_no'))->first();
+                if (!empty($waitHandle) && $waitHandle->status != 0) {
+                    echo '支付成功';
+                    return redirect('/kb/tasksuccess/' . $waitHandle->task_id);
+                }
+                break;
+            case 'pub task'://托管赏金
+                //修改订单状态，产生财务记录，修改任务状态
+                $waitHandle = OrderModel::where('code',$request->get('out_trade_no'))->first();
+                if (!empty($waitHandle) && $waitHandle->status != 0) {
+                    $task = TaskModel::find($waitHandle->task_id);
+                    echo '支付成功';
+                    if ($task['type_id'] == 1) {
+                        return redirect('/kb/' . $waitHandle->task_id);
+                    } else {
+                        return redirect('/employ/workIn/' . $waitHandle->task_id);
+                    }
+                }
+
+                break;
+            case "payarticle"://资讯支付
+                $articlepay = ArticlePayModel::where('order_num', $request->get('out_trade_no'))->first();
+                if (!empty($articlepay) && $articlepay->status!= 1) {
+                    echo '支付成功';
+                    return redirect('/user/consult')->with(array("message" => "支付成功等待审核"));
+                }
+                break;
+            case "buy programme"://购买方案
+                $programme = ProgrammeOrderModel::where("order_num", $request->get('out_trade_no'))->get();
+                if (!$programme) {
+                    foreach ($programme as $key => $val) {
+                        if($val->status != 1){
+                            echo '支付失败';
+                            return redirect()->to('/user/shopCart')->withErrors(['errMsg' => '支付成功！']);
+                        }
+                    }
+                }
+                break;
+            case "buy inquiry":
+                $findInquiry = ProgrammeInquiryPayModel::where("order_num", $request->get('out_trade_no'))->first();
+                if (!$findInquiry && $findInquiry->status!=1) {
+                    echo '支付成功';
+                    return redirect("/user/index")->withErrors(['errMsg' => '支付成功！']);
+                }
+                break;
+            case "vip":
+            case "ck":
+            case "rk":
+                $userVipOrder = VipUserOrderModel::where("order_num", $request->get('out_trade_no'))->first();
+                if (!$userVipOrder && $userVipOrder->pay_status != 1) {
+                    echo '支付成功';
+                    return redirect("/user/myVip")->withErrors(['errMsg' => '支付成功！']);
+                }
+                break;
+            case "deposit":
+                $userDeposit = UserDepositModel::where("order_num", $request->get('out_trade_no'))->first();
+                if (!$userDeposit && $userDeposit->status != 1) {
+                    echo '支付成功';
+                    return redirect("/user/myDeposit")->withErrors(['errMsg' => '支付成功！']);
+                }
+                break;
+            case "tool":
+                $subOrder = UserToolModel::where("order_num", $request->get('out_trade_no'))->first();
+                if (!$subOrder && $subOrder->status != 1) {
+                    echo '支付成功';
+                    return redirect("/user/toolAll")->withErrors(['errMsg' => '支付成功！']);
+                }
+                break;
+            case "service":
+                $inquiryPay = ProgrammeInquiryPayModel::where("order_num", $request->get('out_trade_no'))->first();
+                //获取用户信息
+                if (!$inquiryPay && $inquiryPay->status != 1) {
+                    echo '支付成功';
+                    return redirect("/user/toolAll")->withErrors(['errMsg' => '支付成功！']);
+                    
+                }
+                break;
+            case "article":
+                $articlePay = ArticlePayModel::where("order_num", $request->get('out_trade_no'))->first();
+                if (!$articlePay && $articlePay->status != 1) {
+                    echo '支付成功';
+                    return redirect("/user/consult")->withErrors(['errMsg' => '支付成功！']);
+                }
+                break;
+        }
+
+        // $gateway = Omnipay::create('Alipay_Express');
+        $gateway = Omnipay::gateway('alipay');
+        $config = ConfigModel::getPayConfig('alipay');
+
+        $gateway->setPartner($config['partner']);
+        $gateway->setKey($config['key']);
+        $gateway->setSellerEmail($config['sellerEmail']);
+        $gateway->setReturnUrl(env('ALIPAY_RETURN_URL', url('/order/pay/alipay/return')));
+        $gateway->setNotifyUrl(env('ALIPAY_NOTIFY_URL', url('/order/pay/alipay/notify')));
+
+        $options = [
+            'request_params' => $_REQUEST,
+        ];
+	Log::info(var_export($request->all(),1));
+        $response = $gateway->completePurchase($options)->send();
+       // dd($response->getRedirectUrl());
+        // $response = $gateway->purchase($options)->send();
+ Log::info($request->get('out_trade_no').'isSuccessful---'.$response->isSuccessful());
+Log::info($request->get('out_trade_no').'isTradeStatusOk---'.$response->isTradeStatusOk());
+        if ($response->isSuccessful() && $response->isTradeStatusOk()) {
+	    Log::info($request->get('out_trade_no').'isSuccessful');
+
+            $data = array(
+                'pay_account' => $request->get('buyer_email'),//支付账号
+                'code' => $request->get('out_trade_no'),//订单编号
+                'pay_code' => $request->get('trade_no'),//支付宝订单号
+                'money' => $request->get('total_fee'),//支付金额
+            );
+            $type = ShopOrderModel::handleOrderCode($request->get('out_trade_no'));
+            return $this->alipayReturnHandle($type, $data);
+
+        } else {
+            //支付失败通知.
+           // exit('支付失败');
+	    return redirect('/');
+        }
+    }
+
+    /**
+     * 支付宝异步回调
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\RedirectResponse|\Illuminate\Routing\Redirector
+     */
+    public function alipayNotify(Request $request)
+    {
+	 Log::info($request->get('out_trade_no').'alipay notify');
+
+        $gateway = Omnipay::gateway('alipay');
+
+        $config = ConfigModel::getPayConfig('alipay');
+
+        $gateway->setPartner($config['partner']);
+        $gateway->setKey($config['key']);
+        $gateway->setSellerEmail($config['sellerEmail']);
+        $gateway->setReturnUrl(env('ALIPAY_RETURN_URL', url('/order/pay/alipay/return')));
+        $gateway->setNotifyUrl(env('ALIPAY_NOTIFY_URL', url('/order/pay/alipay/notify')));
+
+        $options = [
+            'request_params' => $_REQUEST,
+        ];
+
+        $response = $gateway->completePurchase($options)->send();
+
+        if ($response->isSuccessful() && $response->isTradeStatusOk()) {
+	    Log::info($request->get('out_trade_no').'notify success');
+
+            $data = array(
+                'pay_account' => $request->get('buyer_email'),//支付账号
+                'code' => $request->get('out_trade_no'),//订单编号
+                'pay_code' => $request->get('trade_no'),//支付宝订单号
+                'money' => $request->get('total_fee'),//支付金额
+            );
+
+            $type = ShopOrderModel::handleOrderCode($request->get('out_trade_no'));
+
+            return $this->alipayNotifyHandle($type, $data);
+
+        } else {
+            //支付失败通知.
+            exit('支付失败');
+        }
+    }
+
+    /**
+     * 微信支付异步回调
+     *
+     * @return mixed
+     */
+    public function wechatNotify()
+    {
+        Log::info('进入回调1');
+
+        //获取微信回调参数
+        $arrNotify = \CommonClass::xmlToArray($GLOBALS['HTTP_RAW_POST_DATA']);
+
+        Log::info('进入回调2'.$arrNotify['out_trade_no']);
+        if ($arrNotify['result_code'] == 'SUCCESS' && $arrNotify['return_code'] == 'SUCCESS') {
+            $data = array(
+                'pay_account' => $arrNotify['openid'],
+                'code' => $arrNotify['out_trade_no'],
+                'pay_code' => $arrNotify['transaction_id'],
+                'money' => $arrNotify['total_fee'] / 100,
+            );
+
+            $type = ShopOrderModel::handleOrderCode($data['code']);
+            Log::info('进入回调3'.$arrNotify['out_trade_no'].'类型'.$type);
+            return $this->wechatNotifyHandle($type, $data);
+        }
+    }
+
+    /**
+     * 根据订单类型处理同步回调逻辑
+     *
+     * @param $type
+     * @param $data
+     * @return \Illuminate\Http\RedirectResponse|\Illuminate\Routing\Redirector
+     */
+    public function alipayReturnHandle($type, $data)
+    {
+Log::info('123456');
+        switch ($type){
+            case 'cash'://充值
+                $res = OrderModel::where('code', $data['code'])->first();
+                if (!empty($res) && $res->status == 0) {
+                    $orderModel = new OrderModel();
+                    $status = $orderModel->recharge('alipay', $data);
+                    if ($status) {
+                        echo '支付成功';
+                        return redirect()->to('finance/cash');
+                    }
+                }else{
+                    return redirect()->to('finance/cash');
+                }
+                break;
+            case 'task service':
+                $waitHandle = OrderModel::where('code', $data['code'])->first();
+                if (!empty($waitHandle)){
+                    switch ($waitHandle->status){
+                        case 0:
+                            $result = TaskModel::payServiceTask($waitHandle->cash, $waitHandle->task_id, $waitHandle['uid'], $data['code'], 2);
+                            break;
+                        case 1:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect('/kb/tasksuccess/'.$waitHandle->task_id);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/kb/buyServiceTask/'.$waitHandle->task_id)->withErrors(['errMsg' => '支付失败！']);
+
+                }
+                break;
+            case 'pub task'://托管赏金
+                //修改订单状态，产生财务记录，修改任务状态
+                $waitHandle = OrderModel::where('code', $data['code'])->first();
+                if (!empty($waitHandle)){
+                    switch ($waitHandle->status){
+                        case 0:
+                            $result = TaskModel:: bounty($waitHandle->cash, $waitHandle->task_id, $waitHandle['uid'], $data['code'], 2);
+                            break;
+                        case 1:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    $task = TaskModel::find($waitHandle->task_id);
+                    if ($result){
+                        echo '支付成功';
+                        if($task['type_id'] == 1){
+                            return redirect('/kb/'.$waitHandle->task_id);
+                        }else{
+                            return redirect('/employ/workIn/'.$waitHandle->task_id);
+                        }
+                    }
+                    echo '支付失败';
+                    if($task['type_id'] == 1){
+                        return redirect('/kb/'.$waitHandle->task_id)->with(['error' => '支付失败！']);
+                    }else{
+                        return redirect('/employ/workIn/'.$waitHandle->task_id)->with(['error' => '支付失败！']);
+                    }
+                }
+
+                break;
+            case 'pub goods':
+                $data['pay_type'] = 2;
+                $shopOrder = ShopOrderModel::where(['code' => $data['code']])->first();
+                if (!empty($shopOrder)){
+                    $status = ShopOrderModel::thirdBuyShopService($shopOrder->code, $data);
+                    if ($status){
+                        //支付成功后操作
+                        echo('支付成功');
+                        $goodsService = GoodsServiceModel::where('id',$shopOrder->object_id)->first();
+                        if($goodsService){
+                            $goods = GoodsModel::where('id',$goodsService->goods_id)->first();
+                            if($goods && $goods->status == 0){
+                                return redirect()->to('user/waitGoodsHandle/'.$goods->id);
+                            }else{
+                                return redirect()->to('user/goodsShop');
+                            }
+                        }else{
+                            return redirect()->to('user/goodsShop');
+                        }
+                    }else{
+                        return redirect()->to('user/goodsShop');
+                    }
+                }
+                break;
+            case 'employ':
+                //给用户充值
+                $order = ShopOrderModel::where('code',$data['code'])->first();
+                $employ = EmployModel::where('id',$order['object_id'])->first();
+                if($order && $employ && $order['status'] == 0){
+                    $result = UserDetailModel::recharge($order['uid'], 2, $data);
+                    if (!$result) {
+                        echo '支付失败！';
+                    }
+                    $result2 = EmployModel::employBounty($data['money'], $order['object_id'], $order['uid'], $data['code'],2);
+                    if($result2)
+                    {
+                        echo('支付成功');
+                        return Redirect::route('success',['id' => $order['object_id'],'uid'=>$employ['employee_uid']]);
+                    }
+                }else{
+                    echo('支付成功');
+                    return Redirect::route('success',['id' => $order['object_id'],'uid'=>$employ['employee_uid']]);
+                }
+
+                break;
+            case 'pub service':
+                $order = ShopOrderModel::where('code',$data['code'])->first();
+                if($order && $order['status'] == 0){
+                    //给用户充值
+                    $result = UserDetailModel::recharge($order['uid'], 2, $data);
+                    if (!$result) {
+                        echo '支付失败！';
+                    }
+                    $result = GoodsModel::servicePay($data['money'],$order['uid'],$order['object_id'],$order['id'],2);
+                    $service = GoodsModel::where('id',$order['object_id'])->first();
+                    //跳转到置顶页面
+                    if(!$result){
+                        echo '支付失败！';
+                    }
+                    echo '支付成功！';
+                    return redirect()->to('user/serviceList')->with(['message'=>'您的服务成功被置顶到商城,'.date('Y-m-d',strtotime($service['recommend_end'])).'到期']);
+                }
+                return redirect()->to('user/serviceList');
+
+                break;
+            case 'buy goods':
+                $data['pay_type'] = 2;
+                $res = ShopOrderModel::where(['code'=>$data['code']])->first();
+                if (!empty($res) && $res['status'] == 0){
+                    $status = ShopOrderModel::thirdBuyGoods($res->code, $data);
+                    if ($status) {
+                        //查询商品数据
+                        $goodsInfo = GoodsModel::where('id',$res->object_id)->first();
+                        //修改商品销量
+                        $salesNum = intval($goodsInfo->sales_num + 1);
+                        GoodsModel::where('id',$goodsInfo->id)->update(['sales_num' => $salesNum]);
+                        echo '支付成功';
+                        return redirect('shop/confirm/'.$res->id);
+                    }
+                }
+                break;
+            case 'vipshop':
+                $waitHandle = VipshopOrderModel::where('code', $data['code'])->first();
+                if (!empty($waitHandle)){
+                    switch ($waitHandle->status){
+                        case 0:
+                            UserDetailModel::recharge($waitHandle['uid'], 2, $data);
+                            $status = VipshopOrderModel::payVipShop($data,2);
+                            $result = is_null($status) ? true : false;
+                            break;
+                        case 1:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                    }
+                    if ($result){
+                        return redirect('/vipshop/vipsucceed');
+                    }
+                    return redirect('/vipshop/vipfailure');
+                }
+                break;
+
+            case "payarticle"://资讯支付
+                $articlepay = ArticlePayModel::where('order_num', $data['code'])->first();
+                if (!empty($articlepay)){
+                    switch ($articlepay->status){
+                        case 1:
+                            $result = ArticleModel::payarticle($articlepay->price, $articlepay->article_id, $articlepay['uid'],$articlepay['order_num'],2);
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect('/user/consult')->with(array("message"=>"支付成功等待审核"));
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/employ/trusteemoney/'.$articlepay->article_id)->withErrors(['errMsg' => '支付失败！']);
+
+                }
+                break;
+            case "buy programme"://购买方案
+                $programme=ProgrammeOrderModel::where("order_num",$data['code'])->get();
+                if(!$programme){
+                    $result=false;
+                    foreach ($programme as $key=>$val){
+                        switch ($val->status){
+                            case 1:
+                                $result=DB::transaction(function() use($data,$val){
+                                    $programme = ProgrammeOrderModel::where("order_num",$data['code'])->update(["status"=>2,"payment_at"=>date("Y-m-d")]);
+                                    ProgrammeOrderModel::programmeSuccessHandle($data,$val,2);
+                                    return $programme;
+                                });
+                                break;
+                            case 2:
+                                $result = true;
+                                break;
+                            default:
+                                $result = true;
+                                break;
+                        }
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/payProgramme")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/shopCart')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "buy inquiry":
+                $findInquiry=ProgrammeInquiryPayModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$findInquiry['uid'])->pluck("balance");
+                if(!$findInquiry){
+                    $result=false;
+                    switch ($findInquiry->status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$findInquiry,$userBalance){
+                                $programme = ProgrammeInquiryPayModel::where("order_num",$data['code'])->update(["status"=>2,"payment_at"=>date("Y-m-d")]);
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                         'payment_at'=>date("Y-m-d H:i:s"),
+                                         'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                //生成询价记录
+                                ProgrammeEnquiryMessageModel::where("programme_id",$programme['programme_id'])
+                                    ->where("uid",$programme['uid'])->where("pay_type",1)->update(["pay_type"=>2]);
+
+                                FinancialModel::createOne([
+                                    'action'     => 5,
+                                    'pay_type'   => 2,
+                                    'cash'       => $findInquiry['price'],
+                                    'uid'        => $findInquiry['uid'],
+                                    'related_id'   =>$findInquiry['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $programme;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/index")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/shopCart')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "vip":
+            case "ck":
+            case "rk":
+                $userVipOrder=VipUserOrderModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$userVipOrder['uid'])->pluck("balance");
+                if(!$userVipOrder){
+                    $result=false;
+                    switch ($userVipOrder->pay_status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$userVipOrder,$type,$userBalance){
+                                $data['order_num']=$data['code'];
+                                $data['action']=$type;
+                                if($type=="vip"){
+                                    $data['order_id']=$userVipOrder['id'];
+                                }else{
+                                    $data['order_id']=$userVipOrder['vipconfigid'];
+                                }
+                                $data['price']=$userVipOrder['price'];
+                                VipUserOrderModel::createVipData($data);
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                        'payment_at'=>date("Y-m-d H:i:s"),
+                                        'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                FinancialModel::createOne([
+                                    'action'     => 12,
+                                    'pay_type'   => 2,
+                                    'cash'       => $userVipOrder['price'],
+                                    'uid'        => $userVipOrder['uid'],
+                                    'related_id'   =>$userVipOrder['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $data;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/myVip")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/myVip')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "deposit":
+                $userDeposit=UserDepositModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$userDeposit['uid'])->pluck("balance");
+                if(!$userDeposit){
+                    $result=false;
+                    switch ($userDeposit->status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$userDeposit,$type,$userBalance){
+                                // $data['order_num']=$data['code'];
+                                //VipUserOrderModel::createVipData($data);
+                                FinancialModel::createOne([
+                                    'action'     => 9,
+                                    'pay_type'   => 2,
+                                    'cash'       => $userDeposit['price'],
+                                    'uid'        => $userDeposit['uid'],
+                                    'related_id'   =>$userDeposit['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                //修改用户保证金
+                                UserDetailModel::where("uid",Auth::user()->id)->update(["deposit"=> $userDeposit['price']]);
+                                //修改状态
+                                UserDepositModel::where("order_num",$data['code'])->update(["status"=>2,"payment_at"=>date("Y-m-d H:i:s")]);
+                                AuthRecordModel::create([
+                                    'auth_id'=>$userDeposit['id'],
+                                    'uid'=>Auth::user()->id,
+                                    'username'=>Auth::user()->name,
+                                    'auth_code' =>"promise",
+                                    'status' =>1,
+                                    'auth_time'=>date("Y-m-d H:i:s")
+
+                                ]);
+                                UserDepositModel::sendSms(Auth::user()->id,"deposit_sub",$userDeposit['price']);
+                                return $data;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/myDeposit")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/myDeposit')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "tool":
+            $subOrder=UserToolModel::where("order_num",$data['code'])->first();
+            //获取用户信息
+            $userBalance=UserDetailModel::where("uid",$subOrder['uid'])->pluck("balance");
+            if(!$subOrder){
+                $result=false;
+                switch ($subOrder->status){
+                    case 1:
+                        $result=DB::transaction(function() use($data,$subOrder,$type,$userBalance){
+                            // $data['order_num']=$data['code'];
+                            //VipUserOrderModel::createVipData($data);
+                            //修改状态
+                            UserToolModel::where("order_num",$data['code'])->update(["status"=>1,"pay_status"=>2]);
+                            //查询是否存在优惠券的
+                            $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                            if($userCouponLog){
+                                UserCouponLogModel::where("order_num",$data['code'])->update([
+                                    'payment_at'=>date("Y-m-d H:i:s"),
+                                    'status' =>2,
+                                ]);
+                                UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                    'status'=>2,
+                                ]);
+                            }
+                            FinancialModel::createOne([
+                                'action'     => 6,
+                                'pay_type'   => 2,
+                                'cash'       => $subOrder['price'],
+                                'uid'        => $subOrder['uid'],
+                                'related_id'   =>$subOrder['id'],
+                                'created_at' => date('Y-m-d H:i:s', time()),
+                                'status' =>2,
+                                'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                'remainder'  =>$userBalance,
+                            ]);
+                            return $data;
+                        });
+                        break;
+                    case 2:
+                        $result = true;
+                        break;
+                    default:
+                        $result = true;
+                        break;
+                }
+                if ($result){
+                    echo '支付成功';
+                    return redirect("/user/toolAll")->withErrors(['errMsg' => '支付成功！']);
+                }
+                echo '支付失败';
+                return redirect()->to('/user/toolAll')->withErrors(['errMsg' => '支付失败！']);
+            }
+            break;
+            case "service":
+                $inquiryPay=ProgrammeInquiryPayModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$inquiryPay['uid'])->pluck("balance");
+                if(!$inquiryPay){
+                    $result=false;
+                    switch ($inquiryPay->status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$inquiryPay,$type,$userBalance){
+                                // $data['order_num']=$data['code'];
+                                //VipUserOrderModel::createVipData($data);
+                                ProgrammeInquiryPayModel::where("order_num",$data['code'])->update(["status"=>2,"payment_at"=>date("Y-m-d H:i:s")]);
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                        'payment_at'=>date("Y-m-d H:i:s"),
+                                        'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                FinancialModel::createOne([
+                                    'action'     => 8,
+                                    'pay_type'   => 2,
+                                    'cash'       => $inquiryPay['price'],
+                                    'uid'        => $inquiryPay['uid'],
+                                    'related_id'   =>$inquiryPay['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $data;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/toolAll")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/toolAll')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "article":
+                $articlePay=ArticlePayModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$articlePay['uid'])->pluck("balance");
+                if(!$articlePay) {
+                    $result = false;
+                    switch ($articlePay->status) {
+                        case 1:
+                            $result = DB::transaction(function () use ($data, $articlePay, $type,$userBalance) {
+                                ArticlePayModel::where("order_num", $data['code'])->update(["status" => 2, "payment_at" => date("Y-m-d H:i:s")]);
+                                ArticleModel::where("id",$articlePay['article_id'])->update(["status"=>0]);
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                        'payment_at'=>date("Y-m-d H:i:s"),
+                                        'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                FinancialModel::createOne([
+                                    'action' => 7,
+                                    'pay_type' => 2,
+                                    'cash' => $articlePay['price'],
+                                    'uid' => $articlePay['uid'],
+                                    'related_id' => $articlePay['id'],
+                                    'created_at' => date('Y-m-d H:i:s'),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $data;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result) {
+                        echo '支付成功';
+                        return redirect("/user/consult")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/consult')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+        }
+    }
+
+    /**
+     * 根据订单类型处理支付宝异步回调逻辑
+     *
+     * @param $type
+     * @param $data
+     */
+    public function alipayNotifyHandle($type, $data)
+    {
+Log::info('notify 123');
+        switch ($type){
+            case 'cash':
+                $res = OrderModel::where('code', $data['code'])->first();
+                if (!empty($res) && $res->status == 0) {
+                    $orderModel = new OrderModel();
+                    $staus = $orderModel->recharge('alipay', $data);
+                    if ($staus) {
+                        exit('支付成功');
+                    }
+                }
+                break;
+            case 'task service':
+                $waitHandle = OrderModel::where('code', $data['code'])->first();
+                if (!empty($waitHandle)){
+                    switch ($waitHandle->status){
+                        case 0:
+                            //给用户充值
+                            $result = TaskModel::payServiceTask($waitHandle->cash, $waitHandle->task_id, $waitHandle->uid, $data['code'],2);
+                            break;
+                        case 1:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                    }
+                    echo '支付失败';
+                }
+                break;
+            case 'pub task':
+                //修改订单状态，产生财务记录，修改任务状态
+                $waitHandle = OrderModel::where('code', $data['code'])->first();
+                if (!empty($waitHandle)){
+                    switch ($waitHandle->status){
+                        case 0:
+                            $result = TaskModel:: bounty($waitHandle->cash, $waitHandle->task_id, $waitHandle['uid'], $data['code'], 2);
+                            break;
+                        case 1:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                    }
+                    echo '支付失败';
+                }
+
+                break;
+            case 'pub goods':
+                $data['pay_type'] = 2;
+                $shopOrder = ShopOrderModel::where(['code' => $data['code'], 'status' => 0, 'object_type' => 3])->first();
+                if (!empty($shopOrder)){
+                    $status = ShopOrderModel::thirdBuyShopService($shopOrder->code, $data);
+                    if ($status){
+                        //支付成功后操作
+                        exit('支付成功');
+                    }
+                }
+                break;
+            case 'employ':
+                //给用户充值
+                $order = ShopOrderModel::where('code',$data['code'])->first();
+                if (!$order) {
+                    echo '支付失败！';
+                }
+                $result = UserDetailModel::recharge($order['uid'], 2, $data);
+                if (!$result) {
+                    echo '支付失败！';
+                }
+                $employ = EmployModel::where('id',$order['object_id'])->first();
+                $result2 = EmployModel::employBounty($data['money'], $order['object_id'],$order['uid'], $data['code'],2);
+                if($result2)
+                {
+                    echo('支付成功');
+                }
+                break;
+            case 'pub service':
+                //给用户充值
+                $order = ShopOrderModel::where('code',$data['code'])->first();
+                if (!$order) {
+                    echo '支付失败！';
+                }
+                $result = UserDetailModel::recharge($order['uid'], 2, $data);
+                if (!$result) {
+                    echo '支付失败！';
+                }
+                $result = GoodsModel::servicePay($data['money'],$order['uid'],$order['object_id'],$order['id'],2);
+                $service = GoodsModel::where('id',$order['object_id'])->first();
+                //跳转到置顶页面
+                if(!$result)
+                    echo '支付失败！';
+
+                echo('支付成功');
+                break;
+            case 'buy goods':
+                $data['pay_type'] = 2;
+                $res = ShopOrderModel::where(['code'=>$data['code'],'status'=>0,'object_type' => 2])->first();
+                if (!empty($res)){
+                    $status = ShopOrderModel::thirdBuyGoods($res->code, $data);
+                    if ($status) {
+                        //查询商品数据
+                        $goodsInfo = GoodsModel::where('id',$res->object_id)->first();
+                        //修改商品销量
+                        $salesNum = intval($goodsInfo->sales_num + 1);
+                        GoodsModel::where('id',$goodsInfo->id)->update(['sales_num' => $salesNum]);
+                        echo '支付成功';
+                    }
+                }
+                break;
+            case 'vipshop':
+                $waitHandle = VipshopOrderModel::where(['status' => 0, 'code' => $data['code']])->first();
+                if (empty($waitHandle)){
+                    break;
+                }
+                UserDetailModel::recharge($waitHandle['uid'], 2, $data);
+                $status = VipshopOrderModel::payVipShop($data,2);
+                if (is_null($status)){
+                    echo '支付成功';
+                }
+                break;
+
+            case "payarticle"://资讯支付
+                $articlepay = ArticlePayModel::where('order_num', $data['code'])->first();
+                if (!empty($articlepay)){
+                    switch ($articlepay->status){
+                        case 1:
+                            $result = ArticleModel::payarticle($articlepay->price, $articlepay->article_id, $articlepay['uid'],$articlepay['order_num'],2);
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect('/employ/articlesuccess/'. $articlepay->article_id)->with(array("message"=>"支付成功等待审核"));
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/employ/trusteemoney/'.$articlepay->article_id)->withErrors(['errMsg' => '支付失败！']);
+
+                }
+                break; 
+            case "buy programme":
+                $programme=ProgrammeOrderModel::where("order_num",$data['code'])->get();
+                if(!$programme){
+                    $result=false;
+                    foreach ($programme as $key=>$val){
+                        switch ($val->status){
+                            case 1:
+                                $result=DB::transaction(function() use($data,$val){
+                                    $programme = ProgrammeOrderModel::where("order_num",$data['code'])->update(["status"=>2,"payment_at"=>date("Y-m-d")]);
+                                    ProgrammeOrderModel::programmeSuccessHandle($data,$val,2);
+                                    return $programme;
+                                });
+                                break;
+                            case 2:
+                                $result = true;
+                                break;
+                            default:
+                                $result = true;
+                                break;
+                        }
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/payProgramme")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/shopCart')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "buy inquiry":
+                $findInquiry=ProgrammeInquiryPayModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$findInquiry['uid'])->pluck("balance");
+                if(!$findInquiry){
+                    $result=false;
+                    switch ($findInquiry->status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$findInquiry,$userBalance){
+                                $programme = ProgrammeInquiryPayModel::where("order_num",$data['code'])->update(["status"=>2,"payment_at"=>date("Y-m-d")]);
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                        'payment_at'=>date("Y-m-d H:i:s"),
+                                        'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                //生成询价记录
+                                ProgrammeEnquiryMessageModel::where("programme_id",$programme['programme_id'])
+                                    ->where("uid",$programme['uid'])->where("pay_type",1)->update(["pay_type"=>2]);
+
+                                FinancialModel::createOne([
+                                    'action'     => 5,
+                                    'pay_type'   => 2,
+                                    'cash'       => $findInquiry['price'],
+                                    'uid'        => $findInquiry['uid'],
+                                    'related_id'   =>$findInquiry['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $programme;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/index")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/shopCart')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "vip":
+            case "ck":
+            case "rk":
+                    $userVipOrder=VipUserOrderModel::where("order_num",$data['code'])->first();
+                    //获取用户信息
+                    $userBalance=UserDetailModel::where("uid",$userVipOrder['uid'])->pluck("balance");
+                    if(!$userVipOrder){
+                        $result=false;
+                        switch ($userVipOrder->pay_status){
+                            case 1:
+                                $result=DB::transaction(function() use($data,$userVipOrder,$type,$userBalance){
+                                    $data['order_num']=$data['code'];
+                                    $data['action']=$type;
+                                    if($type=="vip"){
+                                        $data['order_id']=$userVipOrder['id'];
+                                    }else{
+                                        $data['order_id']=$userVipOrder['vipconfigid'];
+                                    }
+                                    $data['price']=$userVipOrder['price'];
+                                    VipUserOrderModel::createVipData($data);
+                                    //查询是否存在优惠券的
+                                    $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                    if($userCouponLog){
+                                        UserCouponLogModel::where("order_num",$data['code'])->update([
+                                            'payment_at'=>date("Y-m-d H:i:s"),
+                                            'status' =>2,
+                                        ]);
+                                        UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                            'status'=>2,
+                                        ]);
+                                    }
+                                    FinancialModel::createOne([
+                                        'action'     => 12,
+                                        'pay_type'   => 2,
+                                        'cash'       => $userVipOrder['price'],
+                                        'uid'        => $userVipOrder['uid'],
+                                        'related_id'   =>$userVipOrder['id'],
+                                        'created_at' => date('Y-m-d H:i:s', time()),
+                                        'status' =>2,
+                                        'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                        'remainder'  =>$userBalance,
+                                    ]);
+                                    return $data;
+                                });
+
+                                break;
+                            case 2:
+                                $result = true;
+                                break;
+                            default:
+                                $result = true;
+                                break;
+                        }
+                        if ($result){
+                            echo '支付成功';
+                            return redirect("/user/myVip")->withErrors(['errMsg' => '支付成功！']);
+                        }
+                        echo '支付失败';
+                        return redirect()->to('/user/myVip')->withErrors(['errMsg' => '支付失败！']);
+                    }
+                break;
+            case "deposit":
+                $userDeposit=UserDepositModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$userDeposit['uid'])->pluck("balance");
+                if(!$userDeposit){
+                    $result=false;
+                    switch ($userDeposit->status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$userDeposit,$type,$userBalance){
+                               // $data['order_num']=$data['code'];
+                                //VipUserOrderModel::createVipData($data);
+                                FinancialModel::createOne([
+                                    'action'     => 9,
+                                    'pay_type'   => 2,
+                                    'cash'       => $userDeposit['price'],
+                                    'uid'        => $userDeposit['uid'],
+                                    'related_id'   =>$userDeposit['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                //修改用户保证金
+                                UserDetailModel::where("uid",Auth::user()->id)->update(["deposit"=> $userDeposit['price']]);
+                                //修改状态
+                                UserDepositModel::where("order_num",$data['code'])->update(["status"=>2,"payment_at"=>date("Y-m-d H:i:s")]);
+                                AuthRecordModel::create([
+                                    'auth_id'=>$userDeposit['id'],
+                                    'uid'=>Auth::user()->id,
+                                    'username'=>Auth::user()->name,
+                                    'auth_code' =>"promise",
+                                    'status' =>1,
+                                    'auth_time'=>date("Y-m-d H:i:s")
+
+                                ]);
+                                UserDepositModel::sendSms(Auth::user()->id,"deposit_sub",$userDeposit['price']);
+                                return $data;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/myDeposit")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/myDeposit')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "tool":
+                $subOrder=UserToolModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$subOrder['uid'])->pluck("balance");
+                if(!$subOrder){
+                    $result=false;
+                    switch ($subOrder->status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$subOrder,$type,$userBalance){
+                                // $data['order_num']=$data['code'];
+                                //VipUserOrderModel::createVipData($data);
+                                //修改状态
+                                UserToolModel::where("order_num",$data['code'])->update(["status"=>1,"pay_status"=>2]);
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                        'payment_at'=>date("Y-m-d H:i:s"),
+                                        'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                FinancialModel::createOne([
+                                    'action'     => 6,
+                                    'pay_type'   => 2,
+                                    'cash'       => $subOrder['price'],
+                                    'uid'        => $subOrder['uid'],
+                                    'related_id'   =>$subOrder['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $data;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/toolAll")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/toolAll')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "service":
+                $inquiryPay=ProgrammeInquiryPayModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$inquiryPay['uid'])->pluck("balance");
+                if(!$inquiryPay){
+                    $result=false;
+                    switch ($inquiryPay->status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$inquiryPay,$type,$userBalance){
+                                // $data['order_num']=$data['code'];
+                                //VipUserOrderModel::createVipData($data);
+                                ProgrammeInquiryPayModel::where("order_num",$data['code'])->update(["status"=>2,"payment_at"=>date("Y-m-d H:i:s")]);
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                        'payment_at'=>date("Y-m-d H:i:s"),
+                                        'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                FinancialModel::createOne([
+                                    'action'     => 8,
+                                    'pay_type'   => 2,
+                                    'cash'       => $inquiryPay['price'],
+                                    'uid'        => $inquiryPay['uid'],
+                                    'related_id'   =>$inquiryPay['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $data;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/toolAll")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/toolAll')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "article":
+                $articlePay=ArticlePayModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$articlePay['uid'])->pluck("balance");
+                if(!$articlePay) {
+                    $result = false;
+                    switch ($articlePay->status) {
+                        case 1:
+                            $result = DB::transaction(function () use ($data, $articlePay, $type,$userBalance) {
+
+                                ArticlePayModel::where("order_num", $data['code'])->update(["status" => 2, "payment_at" => date("Y-m-d H:i:s")]);
+                                ArticleModel::where("id",$articlePay['article_id'])->update(["status"=>0]);
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                        'payment_at'=>date("Y-m-d H:i:s"),
+                                        'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                FinancialModel::createOne([
+                                    'action' => 7,
+                                    'pay_type' => 2,
+                                    'cash' => $articlePay['price'],
+                                    'uid' => $articlePay['uid'],
+                                    'related_id' => $articlePay['id'],
+                                    'created_at' => date('Y-m-d H:i:s'),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $data;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result) {
+                        echo '支付成功';
+                        return redirect("/user/consult")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/consult')->withErrors(['errMsg' => '支付失败！']);
+                }
+             break;
+        }
+    }
+
+    /**
+     * 根据订单类型处理微信异步回调逻辑
+     *
+     * @param $type
+     * @param $data
+     */
+    public function wechatNotifyHandle($type, $data)
+    {
+        $content = '<xml>
+                    <return_code><![CDATA[SUCCESS]]></return_code>
+                    <return_msg><![CDATA[OK]]></return_msg>
+                    </xml>';
+        switch ($type){
+            case 'cash':
+                $res = OrderModel::where('code', $data['code'])->first();
+                if (!empty($res) && $res->status == 0) {
+                    $orderModel = new OrderModel();
+                    $status = $orderModel->recharge('wechat', $data);
+                }
+                break;
+            case 'task service':
+                $waitHandle = OrderModel::where('code', $data['code'])->first();
+                $status = false;
+                if (!empty($waitHandle)){
+                    if($waitHandle->status == 0){
+                        //余额支付
+                        $status = TaskModel::payServiceTask($waitHandle->cash, $waitHandle->task_id, $waitHandle->uid, $data['code'], 3);
+
+                    }else{
+                        $status = true;
+                    }
+                }
+                break;
+            case 'pub task':
+                //修改订单状态，产生财务记录，修改任务状态
+                $waitHandle = OrderModel::where('code', $data['code'])->first();
+                $status = false;
+                if (!empty($waitHandle)){
+                    switch ($waitHandle->status){
+                        case 0:
+                            $status = TaskModel:: bounty($waitHandle->cash, $waitHandle->task_id, $waitHandle['uid'], $data['code'], 3);
+                            break;
+                        case 1:
+                            $status = true;
+                            break;
+                        default:
+                            $status = true;
+                            break;
+                    }
+                }
+                break;
+            case 'pub goods':
+                $data['pay_type'] = 3;
+                $shopOrder = ShopOrderModel::where(['code' => $data['code'], 'status' => 0, 'object_type' => 3])->first();
+                if (!empty($shopOrder)){
+                    $status = ShopOrderModel::thirdBuyShopService($shopOrder->code, $data);
+                }
+                break;
+            case 'employ':
+                //给用户充值
+                $order = ShopOrderModel::where('code',$data['code'])->first();
+                if (!$order) {
+                    echo '支付失败！';
+                }
+                $status = UserDetailModel::recharge($order['uid'], 3, $data);
+                if (!$status) {
+                    echo '支付失败！';
+                }
+                $result2 = EmployModel::employBounty($data['money'], $order['object_id'], $order['uid'], $data['code'],3);
+                if($result2)
+                {
+                    echo('支付成功');
+                }
+                break;
+            case 'pub service':
+                //给用户充值
+                $order = ShopOrderModel::where('code',$data['code'])->first();
+                if (!$order) {
+                    echo '支付失败！';
+                }
+                $status = UserDetailModel::recharge($order['uid'], 3, $data);
+                if (!$status) {
+                    echo '支付失败！';
+                }
+                $result = GoodsModel::servicePay($data['money'],$order['uid'],$order['object_id'],$order['id'],3);
+                $service = GoodsModel::where('id',$order['object_id'])->first();
+                //跳转到置顶页面
+                if(!$result)
+                    echo '支付失败！';
+
+                echo('支付成功');
+                break;
+            case 'buy goods':
+                $data['pay_type'] = 3;
+                $res = ShopOrderModel::where(['code'=>$data['code'],'status'=>0,'object_type' => 2])->first();
+                if (!empty($res)){
+                    $status = ShopOrderModel::thirdBuyGoods($res->code, $data);
+                    if ($status) {
+                        //查询商品数据
+                        $goodsInfo = GoodsModel::where('id',$res->object_id)->first();
+                        //修改商品销量
+                        $salesNum = intval($goodsInfo->sales_num + 1);
+                        GoodsModel::where('id',$goodsInfo->id)->update(['sales_num' => $salesNum]);
+                        echo '支付成功';
+                    }
+                }
+                break;
+            case 'vipshop':
+                $waitHandle = VipshopOrderModel::where(['status' => 0, 'code' => $data['code']])->first();
+
+                if (empty($waitHandle)){
+                    break;
+                }
+                $res = UserDetailModel::recharge($waitHandle['uid'], 3, $data);
+                $status = VipshopOrderModel::payVipShop($data,3);
+                if ($res &&is_null($status)){
+                    $status = true;
+                }
+                break;
+
+            case "payarticle"://资讯支付
+                $articlepay = ArticlePayModel::where('order_num', $data['code'])->first();
+                if (!empty($articlepay)){
+                    switch ($articlepay->status){
+                        case 1:
+                            $status = ArticleModel::payarticle($articlepay->price, $articlepay->article_id, $articlepay['uid'],$articlepay['order_num'],3);
+                            break;
+                        default:
+                            $status = true;
+                            break;
+                    }
+                }
+                break;
+            case "buy programme":
+                $programme=ProgrammeOrderModel::where("order_num",$data['code'])->get();
+                if(!$programme){
+                   foreach ($programme as $key=>$val){
+                       switch ($val->status){
+                           case 1:
+                               $result=DB::transaction(function() use($data,$val){
+                                   $programme = ProgrammeOrderModel::where("order_num",$data['code'])->update(["status"=>2,"payment_at"=>date("Y-m-d")]);
+                                   ProgrammeOrderModel::programmeSuccessHandle($data,$val,3);
+                                   return $programme;
+                               });
+                               break;
+                           case 2:
+                               $result = true;
+                               break;
+                           default:
+                               $result = true;
+                               break;
+                       }
+                   }
+
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/payProgramme")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/shopCart')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "buy inquiry":
+                $findInquiry=ProgrammeInquiryPayModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$findInquiry['uid'])->pluck("balance");
+                if(!$findInquiry){
+                    $result=false;
+                    switch ($findInquiry->status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$findInquiry,$userBalance){
+                                $programme = ProgrammeInquiryPayModel::where("order_num",$data['code'])->update(["status"=>2,"payment_at"=>date("Y-m-d")]);
+
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                        'payment_at'=>date("Y-m-d H:i:s"),
+                                        'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                //生成询价记录
+                                ProgrammeEnquiryMessageModel::where("programme_id",$programme['programme_id'])
+                                    ->where("uid",$programme['uid'])->where("pay_type",1)->update(["pay_type"=>2]);
+
+                                FinancialModel::createOne([
+                                    'action'     => 5,
+                                    'pay_type'   => 3,
+                                    'cash'       => $findInquiry['price'],
+                                    'uid'        => $findInquiry['uid'],
+                                    'related_id'   =>$findInquiry['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $programme;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/index")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/shopCart')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "vip":
+            case "ck":
+            case "rk":
+                $userVipOrder=VipUserOrderModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$userVipOrder['uid'])->pluck("balance");
+                if(!$userVipOrder){
+                    $result=false;
+                    switch ($userVipOrder->pay_status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$userVipOrder,$type,$userBalance){
+                                $data['order_num']=$data['code'];
+                                $data['action']=$type;
+                                if($type=="vip"){
+                                    $data['order_id']=$userVipOrder['id'];
+                                }else{
+                                    $data['order_id']=$userVipOrder['vipconfigid'];
+                                }
+                                $data['price']=$userVipOrder['price'];
+                                VipUserOrderModel::createVipData($data);
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                        'payment_at'=>date("Y-m-d H:i:s"),
+                                        'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                FinancialModel::createOne([
+                                    'action'     => 12,
+                                    'pay_type'   => 3,
+                                    'cash'       => $userVipOrder['price'],
+                                    'uid'        => $userVipOrder['uid'],
+                                    'related_id'   =>$userVipOrder['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $data;
+
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/myVip")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/myVip')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "deposit":
+                $userDeposit=UserDepositModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$userDeposit['uid'])->pluck("balance");
+                if(!$userDeposit){
+                    $result=false;
+                    switch ($userDeposit->status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$userDeposit,$type,$userBalance){
+                                // $data['order_num']=$data['code'];
+                                //VipUserOrderModel::createVipData($data);
+                                FinancialModel::createOne([
+                                    'action'     => 9,
+                                    'pay_type'   => 3,
+                                    'cash'       => $userDeposit['price'],
+                                    'uid'        => $userDeposit['uid'],
+                                    'related_id'   =>$userDeposit['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                //修改用户保证金
+                                UserDetailModel::where("uid",Auth::user()->id)->update(["deposit"=> $userDeposit['price']]);
+                                //修改状态
+                                UserDepositModel::where("order_num",$data['code'])->update(["status"=>2,"payment_at"=>date("Y-m-d H:i:s")]);
+                                AuthRecordModel::create([
+                                    'auth_id'=>$userDeposit['id'],
+                                    'uid'=>Auth::user()->id,
+                                    'username'=>Auth::user()->name,
+                                    'auth_code' =>"promise",
+                                    'status' =>1,
+                                    'auth_time'=>date("Y-m-d H:i:s")
+
+                                ]);
+                                UserDepositModel::sendSms(Auth::user()->id,"deposit_sub",$userDeposit['price']);
+                                return $data;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/myDeposit")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/myDeposit')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "tool":
+                $subOrder=UserToolModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$subOrder['uid'])->pluck("balance");
+                if(!$subOrder){
+                    $result=false;
+                    switch ($subOrder->status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$subOrder,$type,$userBalance){
+                                // $data['order_num']=$data['code'];
+                                //VipUserOrderModel::createVipData($data);
+
+                                //修改状态
+                                UserToolModel::where("order_num",$data['code'])->update(["status"=>1,"pay_status"=>2]);
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                        'payment_at'=>date("Y-m-d H:i:s"),
+                                        'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                FinancialModel::createOne([
+                                    'action'     => 6,
+                                    'pay_type'   => 3,
+                                    'cash'       => $subOrder['price'],
+                                    'uid'        => $subOrder['uid'],
+                                    'related_id'   =>$subOrder['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $data;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/toolAll")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/toolAll')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "service":
+                $inquiryPay=ProgrammeInquiryPayModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$inquiryPay['uid'])->pluck("balance");
+                if(!$inquiryPay){
+                    $result=false;
+                    switch ($inquiryPay->status){
+                        case 1:
+                            $result=DB::transaction(function() use($data,$inquiryPay,$type,$userBalance){
+                                // $data['order_num']=$data['code'];
+                                //VipUserOrderModel::createVipData($data);
+
+                                ProgrammeInquiryPayModel::where("order_num",$data['code'])->update(["status"=>2,"payment_at"=>date("Y-m-d H:i:s")]);
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                        'payment_at'=>date("Y-m-d H:i:s"),
+                                        'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                FinancialModel::createOne([
+                                    'action'     => 8,
+                                    'pay_type'   => 3,
+                                    'cash'       => $inquiryPay['price'],
+                                    'uid'        => $inquiryPay['uid'],
+                                    'related_id'   =>$inquiryPay['id'],
+                                    'created_at' => date('Y-m-d H:i:s', time()),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $data;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result){
+                        echo '支付成功';
+                        return redirect("/user/toolAll")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/toolAll')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+            case "article":
+                $articlePay=ArticlePayModel::where("order_num",$data['code'])->first();
+                //获取用户信息
+                $userBalance=UserDetailModel::where("uid",$articlePay['uid'])->pluck("balance");
+                if(!$articlePay) {
+                    $result = false;
+                    switch ($articlePay->status) {
+                        case 1:
+                            $result = DB::transaction(function () use ($data, $articlePay, $type,$userBalance) {
+                                ArticlePayModel::where("order_num", $data['code'])->update(["status" => 2, "payment_at" => date("Y-m-d H:i:s")]);
+                                ArticleModel::where("id",$articlePay['article_id'])->update(["status"=>0]);
+                                //查询是否存在优惠券的
+                                $userCouponLog=UserCouponLogModel::where("order_num",$data['code'])->where("status",1)->first();
+                                if($userCouponLog){
+                                    UserCouponLogModel::where("order_num",$data['code'])->update([
+                                        'payment_at'=>date("Y-m-d H:i:s"),
+                                        'status' =>2,
+                                    ]);
+                                    UserCouponModel::where("id",$userCouponLog['user_coupon_id'])->update([
+                                        'status'=>2,
+                                    ]);
+                                }
+                                FinancialModel::createOne([
+                                    'action' => 7,
+                                    'pay_type' => 3,
+                                    'cash' => $articlePay['price'],
+                                    'uid' => $articlePay['uid'],
+                                    'related_id' => $articlePay['id'],
+                                    'created_at' => date('Y-m-d H:i:s'),
+                                    'status' =>2,
+                                    'coupon'=>$userCouponLog?$userCouponLog['price']:0,
+                                    'remainder'  =>$userBalance,
+                                ]);
+                                return $data;
+                            });
+                            break;
+                        case 2:
+                            $result = true;
+                            break;
+                        default:
+                            $result = true;
+                            break;
+                    }
+                    if ($result) {
+                        echo '支付成功';
+                        return redirect("/user/consult")->withErrors(['errMsg' => '支付成功！']);
+                    }
+                    echo '支付失败';
+                    return redirect()->to('/user/consult')->withErrors(['errMsg' => '支付失败！']);
+                }
+                break;
+        }
+
+        if ($status)
+            //回复微信端请求成功
+            return response($content)->header('Content-Type', 'text/xml');
+    }
+
+
+    /**
+     * 查询订单状态
+     * @param Request $request
+     * @return array
+     */
+    static public function searchOrder(Request $request)
+    {
+        $type = $request->get('type') ? $request->get('type') : 1;
+        if($type == 1){
+            $order = OrderModel::where('code',$request->get('orderCode'))->where('status',1)->first();
+            if($order){
+                return $data = [
+                    'code' => 1
+                ];
+            }
+        }
+        return $data = [
+            'code' => 0
+        ];
+    }
+
+
+    /**
+     * 查询资讯支付订单状态
+     * @param Request $request
+     * @return array
+     */
+    static public function searcharticleOrder(Request $request)
+    {
+        $type = $request->get('type') ? $request->get('type') : 1;
+        if($type == 1){
+            $order = ArticlePayModel::where('order_num',$request->get('orderCode'))->where('status',2)->first();
+            if($order){
+                return $data = [
+                    'code' => 1
+                ];
+            }
+        }
+        return $data = [
+            'code' => 0
+        ];
+    }
+}

@@ -1,0 +1,9 @@
+{
+	"name": "Activity",
+	"slug": "activity",
+	"namespace": "Activity",
+	"version": "1.0",
+	"author": "yan",
+	"license": "MIT",
+	"description": "This is the description for the Activity module"
+}

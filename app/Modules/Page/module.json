@@ -1,0 +1,9 @@
+{
+	"name": "Page",
+	"slug": "page",
+	"namespace": "Page",
+	"version": "1.0",
+	"author": " ",
+	"license": "MIT",
+	"description": "This is the description for the Page module."
+}
