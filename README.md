@@ -1,3 +1,15 @@
+### git 使用总结：
+
+
+#Git add .  //添加缓存
+#Git commit -m "提交说明"
+#git push http://git.icinfo.net/yanjianxing/52pcsolution.git master //代码提交到分支
+
+#git pull http://git.icinfo.net/yanjianxing/52pcsolution.git  //下拉github代码 会合并
+#git clone http://git.icinfo.net/yanjianxing/52pcsolution.git //下拉远程仓库数据 多次执行会覆盖 适用第一次使用
+
+
+
 # 52PcSolution
 
 52PcSolution
